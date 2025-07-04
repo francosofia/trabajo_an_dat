@@ -1,8 +1,14 @@
 import pandas as pd
 import os
 
-# Región que queremos analizar (por ejemplo: 41 = NEA)
-region_deseada = 41
+# Lista de aglomerados del NEA
+aglomerados_nea = [7, 8, 12, 15]
+
+# Diccionario de ponderadores según variable
+ponderadores = {
+    "P21": "PONDIIO",   # Ocupación (ESTADO == 1)
+    "P47T": "PONDII"    # Ingreso total
+}
 
 # Carpeta principal con subcarpetas por año
 carpeta_principal = "bases de dato"
@@ -27,12 +33,16 @@ for subcarpeta in sorted(os.listdir(carpeta_principal)):
             .str.encode("ascii", errors="ignore").str.decode("utf-8")
 
         # Verificar que tenga las columnas necesarias
-        columnas_necesarias = {'ANO4', 'ESTADO', 'CH04', 'CH06', 'P47T', 'REGION'}
+        columnas_necesarias = {
+            'ANO4', 'TRIMESTRE', 'ESTADO', 'CH04', 'CH06', 'P47T', 'AGLOMERADO',
+            ponderadores["P21"]  # PONDIIO
+        }
         if columnas_necesarias.issubset(df.columns):
             df = df[list(columnas_necesarias)]
+            df = df.rename(columns={ponderadores["P21"]: 'PONDERA'})  # renombramos a 'PONDERA' para facilitar
 
-            # Filtrar por región deseada
-            df = df[df['REGION'] == region_deseada]
+            # Filtrar por aglomerados NEA
+            df = df[df['AGLOMERADO'].isin(aglomerados_nea)]
 
             dfs.append(df)
 
@@ -43,21 +53,25 @@ for subcarpeta in sorted(os.listdir(carpeta_principal)):
     df_total = pd.concat(dfs, ignore_index=True)
 
     # Convertir columnas a tipo numérico
-    for col in ['ANO4', 'CH06', 'ESTADO', 'CH04', 'P47T']:
+    for col in ['ANO4', 'TRIMESTRE', 'CH06', 'ESTADO', 'CH04', 'P47T', 'PONDERA']:
         df_total[col] = pd.to_numeric(df_total[col], errors='coerce')
 
-    # Filtrar edad entre 25 y 55 años
-    df_total = df_total[(df_total['CH06'] >= 25) & (df_total['CH06'] <= 55)]
+    # Filtrar edad entre 25 y 55 años y ponderaciones válidas
+    df_total = df_total[df_total['CH06']>=15]
+    df_total = df_total[df_total['PONDERA'] > 0]
 
-    # Calcular total y ocupados
-    total_personas = df_total.groupby(['ANO4', 'CH04']).size().rename("total")
-    ocupados = df_total[df_total['ESTADO'] == 1].groupby(['ANO4', 'CH04']).size().rename("ocupados")
+    # Calcular total de personas (sin filtrar por ESTADO)
+    total_personas = df_total.groupby(['ANO4', 'TRIMESTRE', 'CH04'])['PONDERA'].sum().rename("total")
 
-    # Unir y calcular tasa de empleo
+    # Filtrar ocupados (ESTADO == 1)
+    ocupados = df_total[df_total['ESTADO'] == 1].groupby(['ANO4', 'TRIMESTRE', 'CH04'])['PONDERA'].sum().rename("ocupados")
+
+    # Unir y calcular tasa de empleo ponderada
     tasa_empleo = pd.concat([total_personas, ocupados], axis=1).fillna(0)
     tasa_empleo['tasa_empleo'] = tasa_empleo['ocupados'] / tasa_empleo['total']
     tasa_empleo = tasa_empleo.reset_index()
 
-    # Mostrar resultado por subcarpeta
-    print(f"\n📊 Tasa de empleo por sexo y año para la región {region_deseada} – Carpeta: {subcarpeta}")
-    print(tasa_empleo[['ANO4', 'CH04', 'tasa_empleo']])
+    # Mostrar resultado
+    print(f"\n📊 Tasa de empleo ponderada por trimestre, sexo y año – Aglomerados NEA – Carpeta: {subcarpeta}")
+    print(tasa_empleo[['ANO4', 'TRIMESTRE', 'CH04', 'tasa_empleo']])
+
