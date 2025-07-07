@@ -1,79 +1,81 @@
 import pandas as pd
-import numpy as np
 import os
-from ipc import *
-# Inflación IPC para ajuste de ingresos
+import matplotlib.pyplot as plt
 
+# Rutas personalizables por el usuario
+carpeta_principal = "bases de dato"  # Ruta a la carpeta con los datos
+ruta_caes = "caes_codigos_descripciones.csv"  # Clasificador CAES con columnas: PP04B_COD, Actividad
 
-# Región que se desea analizar
-region_deseada = 41
+# Región NEA
+aglomerados_nea = [7, 8, 12, 15]
 
-# Carpeta principal que contiene subcarpetas por año
-carpeta_principal = "bases de dato"
+# Cargar clasificadores
+caes = pd.read_csv(ruta_caes, dtype={'PP04B_COD': str})
 
-# Recorrer subcarpetas (por año) y procesar los .txt
+# Lista para resultados
+resultados = []
+
+# Recorrer carpetas por año
 for subcarpeta in sorted(os.listdir(carpeta_principal)):
     ruta_subcarpeta = os.path.join(carpeta_principal, subcarpeta)
-    
     if not os.path.isdir(ruta_subcarpeta):
         continue
 
-    archivos = [f for f in os.listdir(ruta_subcarpeta) if f.endswith(".txt")]
-    dfs = []
-
-    for archivo in archivos:
-        ruta = os.path.join(ruta_subcarpeta, archivo)
-        df = pd.read_csv(ruta, sep=";", encoding="utf-8", low_memory=False)
-
-        # Normalizar columnas
-        df.columns = df.columns.str.strip().str.upper().str.normalize('NFKD') \
-            .str.encode('ascii', errors='ignore').str.decode('utf-8')
-
-        # Filtrar columnas necesarias
-        columnas_necesarias = {'ANO4', 'TRIMESTRE', 'ESTADO', 'NIVEL_ED', 'CH06', 'P47T', 'REGION'}
-        if columnas_necesarias.issubset(df.columns):
-            df = df[list(columnas_necesarias)]
-            df = df[df['REGION'] == region_deseada]
-            dfs.append(df)
-
-    if not dfs:
+    archivos_txt = [f for f in os.listdir(ruta_subcarpeta) if f.endswith(".txt")]
+    if not archivos_txt:
         continue
 
-    # Concatenar los dataframes de la subcarpeta
-    df = pd.concat(dfs, ignore_index=True)
+    archivo = archivos_txt[0]
+    ruta_archivo = os.path.join(ruta_subcarpeta, archivo)
 
-    # Conversión de tipos y limpieza
-    df = df[df['CH06'] >= 1]
-    df['ANO4'] = pd.to_numeric(df['ANO4'], errors='coerce')
-    df['TRIMESTRE'] = pd.to_numeric(df['TRIMESTRE'], errors='coerce')
-    df['CH06'] = pd.to_numeric(df['CH06'], errors='coerce')
-    df['P47T'] = pd.to_numeric(df['P47T'], errors='coerce')
+    df = pd.read_csv(ruta_archivo, sep=";", encoding="utf-8", low_memory=False)
+    df.columns = df.columns.str.strip().str.upper().str.normalize("NFKD").str.encode("ascii", errors="ignore").str.decode("utf-8")
 
-    # Filtrar PEA
-    pea = df[df['ESTADO'].isin([1, 2])]
+    columnas_necesarias = {'ANO4', 'TRIMESTRE', 'CH04', 'CH06', 'NIVEL_ED', 'ESTADO', 'PP04B_COD', 'PP04D_COD', 'AGLOMERADO', 'PONDIIO'}
+    if not columnas_necesarias.issubset(df.columns):
+        print(f"❌ Faltan columnas necesarias en {archivo}")
+        continue
 
-    # Ajustar ingresos por inflación
-# Ajustar ingresos por inflación
-    df['ipc'] = df['ANO4'].map(ipc)
-    df['ingreso_real'] = df['P47T'] / df['ipc']
-# Crear clave combinada Año-Trimestre para el IPC
-    df['clave_ipc'] = df['ANO4'].astype(int).astype(str) + '-T' + df['TRIMESTRE'].astype(int).astype(str)
+    df = df[list(columnas_necesarias)]
+    df = df[df['AGLOMERADO'].isin(aglomerados_nea)]
 
-# Mapear IPC a partir del nuevo diccionario
-    df['ipc'] = df['clave_ipc'].map(ipc)
+    # Conversión de tipos
+    for col in ['ANO4', 'TRIMESTRE', 'CH04', 'CH06', 'NIVEL_ED', 'ESTADO', 'PONDIIO']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
 
-# Calcular ingreso real ajustado por IPC
-    df['ingreso_real'] = df['P47T'] / df['ipc']
+    # Filtrar PEA (ocupados), mayores de 15 años
+    df = df[(df['ESTADO'] == 1) & (df['CH06'] >= 15) & (df['PONDIIO'] > 0)]
 
+    # Normalizar código de actividad
+    df['PP04B_COD'] = df['PP04B_COD'].astype(str).str.replace(".0", "", regex=False).str.zfill(4)
 
-    # ───── Análisis 1 ─────
-    grouped = pea.groupby(['ANO4', 'NIVEL_ED'])['ESTADO'].value_counts(normalize=True).unstack().fillna(0)
-    grouped['tasa_desocupacion'] = grouped[2] / (grouped[1] + grouped[2])
+    # Merge con descripción CAES
+    df = pd.merge(df, caes, how="left", on="PP04B_COD")
 
-    print(f"\n📊 Tasa de desocupación por nivel educativo ({subcarpeta}) – Región {region_deseada}:")
-    print(grouped['tasa_desocupacion'])
+    # Añadir período
+    df["Periodo"] = df["ANO4"].astype(str) + "-T" + df["TRIMESTRE"].astype(str)
 
-    # ───── Análisis 2 ─────
-    edad_ingresos = df[df['P47T'].notnull()].groupby('CH06')['ingreso_real'].mean()
-    print(f"\n📊 Ingreso real promedio por edad ({subcarpeta}) – Región {region_deseada}:")
-    print(edad_ingresos)
+    resultados.append(df)
+
+# Concatenar todo
+df_final = pd.concat(resultados, ignore_index=True)
+
+# ---------- EJEMPLO DE GRÁFICO: Nivel educativo ----------
+niveles_validos = df_final[df_final["NIVEL_ED"].between(1, 7)]
+pivot = niveles_validos.pivot_table(index="Periodo", columns="NIVEL_ED", values="PONDIIO", aggfunc="sum").fillna(0)
+pivot = pivot.sort_index()
+
+plt.figure(figsize=(16, 8))
+pivot.plot(kind="bar", stacked=True, figsize=(16, 8), width=0.9)
+plt.title("Distribución de personas ocupadas por nivel educativo – Región NEA")
+plt.xlabel("Trimestre")
+plt.ylabel("Cantidad ponderada de personas")
+plt.xticks(rotation=45)
+plt.legend(title="Nivel educativo")
+plt.grid(axis="y", linestyle="--", alpha=0.5)
+plt.tight_layout()
+plt.show()
+
+# ---------- EXPORTAR RESULTADO ----------
+df_final.to_csv("analisis_multivariado_pea.csv", index=False)
+print("✅ Archivo generado: analisis_multivariado_pea.csv")
